@@ -1,0 +1,87 @@
+# ESPHome 配置：ESP32 斑鸠识别设备
+# 将此配置添加到你的 ESPHome 配置中，或作为独立设备
+
+esphome:
+  name: dove-detector-esp32
+  platform: ESP32
+  board: esp32dev
+  framework:
+    type: arduino
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # 可选：设置静态 IP
+  # manual_ip:
+  #   static_ip: 192.168.1.50
+  #   gateway: 192.168.1.1
+  #   subnet: 255.255.255.0
+
+# 启用 API（用于接收 Arduino 代码发送的事件）
+api:
+  encryption:
+    key: !secret esphome_api_key
+
+# OTA 更新支持
+ota:
+  password: !secret ota_password
+
+# 日志
+logger:
+  level: INFO
+
+# Web 服务器（用于查看设备状态）
+web_server:
+  port: 80
+
+# 传感器：接收 Arduino 代码发送的斑鸠检测事件
+# 注意：实际实现中，Arduino 代码会通过 HTTP API 发送事件到 Home Assistant
+# 这里我们定义一个虚拟传感器来接收这些数据
+
+# 文本传感器：显示最后检测时间
+text_sensor:
+  - platform: template
+    name: "Last Dove Detection Time"
+    id: last_detection_time
+    update_interval: 60s
+
+# 数值传感器：显示检测置信度
+sensor:
+  - platform: template
+    name: "Dove Detection Confidence"
+    id: dove_confidence
+    unit_of_measurement: "%"
+    accuracy_decimals: 2
+    update_interval: 60s
+
+# 计数器：今日检测次数
+counter:
+  - platform: template
+    name: "Today Dove Count"
+    id: today_dove_count
+    initial_value: 0
+    step: 1
+    restore_value: true
+
+# 开关：启用/禁用检测
+switch:
+  - platform: template
+    name: "Enable Detection"
+    id: enable_detection
+    optimistic: true
+    initial_state: true
+
+# 自动化：当检测到斑鸠时触发
+automation:
+  - alias: "Reset Daily Counter at Midnight"
+    trigger:
+      - platform: time
+        at: "00:00:00"
+    then:
+      - counter.reset: today_dove_count
+
+# 注意：
+# 1. Arduino 代码（dove_detector.ino）会通过 HTTP POST 发送事件到 Home Assistant API
+# 2. 在 Home Assistant 中，你需要创建一个自动化来接收这些事件并更新上述传感器
+# 3. 或者，你可以使用 ESPHome 的 HTTP 请求组件，让 ESP32 直接调用 Home Assistant API
+

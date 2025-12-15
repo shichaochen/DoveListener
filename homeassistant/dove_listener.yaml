@@ -1,0 +1,155 @@
+# Home Assistant 配置：斑鸠识别系统
+# 将此配置添加到你的 configuration.yaml 或作为独立包
+
+# ========== 传感器定义 ==========
+sensor:
+  # 接收 ESP32 发送的斑鸠检测事件（通过 REST API）
+  - platform: rest
+    name: "Dove Detection Events"
+    resource: http://localhost:8123/api/webhook/dove_detector
+    method: POST
+    value_template: "{{ value_json.confidence }}"
+    json_attributes:
+      - device_id
+      - event_type
+      - confidence
+      - timestamp
+      - local_time
+    scan_interval: 60
+
+# ========== 输入辅助 ==========
+input_number:
+  dove_detection_threshold:
+    name: "斑鸠检测置信度阈值"
+    min: 0
+    max: 1
+    step: 0.01
+    initial: 0.7
+    unit_of_measurement: "概率"
+
+input_datetime:
+  last_dove_detection:
+    name: "最后检测时间"
+    has_date: true
+    has_time: true
+
+# ========== 计数器 ==========
+counter:
+  dove_count_today:
+    name: "今日斑鸠叫声次数"
+    initial: 0
+    step: 1
+    icon: mdi:bird
+
+  dove_count_week:
+    name: "本周斑鸠叫声次数"
+    initial: 0
+    step: 1
+
+  dove_count_month:
+    name: "本月斑鸠叫声次数"
+    initial: 0
+    step: 1
+
+# ========== 历史记录 ==========
+recorder:
+  include:
+    entities:
+      - counter.dove_count_today
+      - counter.dove_count_week
+      - counter.dove_count_month
+      - sensor.dove_detection_events
+
+# ========== 自动化：接收 ESP32 事件 ==========
+automation:
+  # 接收 ESP32 发送的检测事件
+  - alias: "接收斑鸠检测事件"
+    id: receive_dove_detection
+    trigger:
+      - platform: webhook
+        webhook_id: dove_detector
+    condition:
+      - condition: template
+        value_template: "{{ trigger.json.event_type == 'dove_detected' }}"
+      - condition: template
+        value_template: "{{ trigger.json.confidence | float >= states('input_number.dove_detection_threshold') | float }}"
+    action:
+      # 更新最后检测时间
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.last_dove_detection
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+      
+      # 增加计数器
+      - service: counter.increment
+        target:
+          entity_id: counter.dove_count_today
+      
+      # 记录到日志
+      - service: system_log.write
+        data:
+          message: "检测到斑鸠叫声 - 置信度: {{ trigger.json.confidence | float * 100 | round(1) }}%"
+          level: info
+      
+      # 可选：发送通知
+      # - service: notify.mobile_app_your_phone
+      #   data:
+      #     title: "🐦 检测到斑鸠叫声"
+      #     message: "置信度: {{ trigger.json.confidence | float * 100 | round(1) }}%"
+
+  # 每日凌晨重置计数器
+  - alias: "每日重置计数器"
+    id: reset_daily_counter
+    trigger:
+      - platform: time
+        at: "00:00:00"
+    action:
+      - service: counter.reset
+        target:
+          entity_id: counter.dove_count_today
+      
+      # 将今日计数累加到周计数
+      - service: counter.increment
+        target:
+          entity_id: counter.dove_count_week
+        data:
+          value: "{{ states('counter.dove_count_today') | int }}"
+
+  # 每周一重置周计数器
+  - alias: "每周重置计数器"
+    id: reset_weekly_counter
+    trigger:
+      - platform: time
+        at: "00:00:00"
+        day_of_week:
+          - mon
+    action:
+      - service: counter.reset
+        target:
+          entity_id: counter.dove_count_week
+      
+      # 将周计数累加到月计数
+      - service: counter.increment
+        target:
+          entity_id: counter.dove_count_month
+        data:
+          value: "{{ states('counter.dove_count_week') | int }}"
+
+  # 每月1号重置月计数器
+  - alias: "每月重置计数器"
+    id: reset_monthly_counter
+    trigger:
+      - platform: time
+        at: "00:00:00"
+        day_of_month: 1
+    action:
+      - service: counter.reset
+        target:
+          entity_id: counter.dove_count_month
+
+# ========== Webhook 配置 ==========
+# 在 Home Assistant 中，webhook 需要在 configuration.yaml 中配置
+# 或者通过 UI: 设置 -> 设备与服务 -> Webhook -> 添加 Webhook
+# Webhook ID: dove_detector
+

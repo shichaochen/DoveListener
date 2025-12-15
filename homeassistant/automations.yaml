@@ -1,0 +1,35 @@
+# Home Assistant 自动化：自动生成报告
+# 将此配置添加到你的 automations.yaml
+
+- alias: "每日生成斑鸠统计报告"
+  id: generate_daily_dove_report
+  description: "每天凌晨 00:05 生成前一天的统计报告"
+  trigger:
+    - platform: time
+      at: "00:05:00"
+  action:
+    - service: shell_command.generate_daily_report
+      data:
+        date: "{{ (now() - timedelta(days=1)).strftime('%Y-%m-%d') }}"
+
+- alias: "每周生成斑鸠统计报告"
+  id: generate_weekly_dove_report
+  description: "每周一凌晨 00:10 生成上周的统计报告"
+  trigger:
+    - platform: time
+      at: "00:10:00"
+      day_of_week:
+        - mon
+  action:
+    - service: shell_command.generate_weekly_report
+
+- alias: "每月生成斑鸠统计报告"
+  id: generate_monthly_dove_report
+  description: "每月1号凌晨 00:15 生成上月的统计报告"
+  trigger:
+    - platform: time
+      at: "00:15:00"
+      day_of_month: 1
+  action:
+    - service: shell_command.generate_monthly_report
+

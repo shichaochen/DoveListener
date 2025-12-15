@@ -1,0 +1,8 @@
+# Home Assistant Shell 命令配置
+# 将此配置添加到你的 configuration.yaml 或作为独立文件
+
+shell_command:
+  generate_daily_report: "python3 /config/dove_reports/generate_reports.py --type daily --date {{ date }} --db /config/dove_events.db --output /config/dove_reports"
+  generate_weekly_report: "python3 /config/dove_reports/generate_reports.py --type weekly --db /config/dove_events.db --output /config/dove_reports"
+  generate_monthly_report: "python3 /config/dove_reports/generate_reports.py --type monthly --db /config/dove_events.db --output /config/dove_reports"
+
