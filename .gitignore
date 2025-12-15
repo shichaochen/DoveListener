@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# 模型文件
+*.h5
+*.tflite
+*.pb
+models/
+*.h
+
+# 数据文件
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# 训练数据
+raw_audio/
+*.wav
+*.mp3
+*.flac
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+*.bak
+
+# Arduino
+*.hex
+*.elf
+
+# 报告
+reports/*.png
+reports/*.md
+

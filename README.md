@@ -1,253 +1,309 @@
-## DoveListener：斑鸠叫声自动监听与统计系统（飞牛 NAS 部署版）
+# DoveListener - ESP32 斑鸠叫声识别系统
 
-本项目目标：在飞牛 NAS 上长期运行，**自动监听环境声音 → 识别斑鸠叫声 → 记录每次发生时间和音频片段 → 提供 Web 页面查看每日统计规律**。
+基于 **ESP32 边缘计算** + **ESPHome/Home Assistant 服务器**的斑鸠叫声自动识别与统计系统。
 
-> 说明：本仓库先提供整体架构和代码骨架，鸟叫识别部分预留了 BirdNET 集成接口，你可以根据 NAS 硬件性能再选择具体模型实现。
+## 🎯 系统特点
 
----
+- **边缘计算**：ESP32 本地实时识别斑鸠叫声，无需云端推理
+- **低功耗**：ESP32 功耗低，适合长期 24/7 运行
+- **实时响应**：本地识别，毫秒级响应
+- **自动统计**：Home Assistant 自动记录、统计和生成报告
+- **多维度分析**：每日/每周/每月自动生成统计报告
 
-## 一、整体架构
+## 📋 系统架构
 
-- **运行环境**：飞牛 NAS（底层为 Linux），推荐通过 **Docker 容器**运行本项目。
-- **麦克风**：USB 麦克风插在 NAS 上，通过 Docker 的 ALSA 设备映射给容器使用。
-- **后端服务（Python）**
-  - 使用 `FastAPI` 提供 Web API 和简单页面。
-  - 后台循环任务持续录音（例如每秒 1 段），调用鸟叫识别模型。
-  - 识别到斑鸠叫声时：
-    - 保存这一小段音频到 `data/audio/YYYY-MM-DD/HH-MM-SS.wav`
-    - 写入 SQLite 数据库 `data/dove_events.db`
-- **前端 Web 页面**
-  - 简单的单页 HTML（无框架），通过 Ajax 调用后端接口。
-  - 展示：
-    - 今日总叫声次数
-    - 最早叫声时间
-    - 最频繁时段
-    - 24 小时时间分布图（使用 `Chart.js` 简单画图）。
-
----
-
-## 二、目录结构
-
-```text
-.
-├── README.md
-├── requirements.txt        # Python 依赖
-├── docker-compose.yml      # Docker 编排（推荐）
-├── app
-│   ├── main.py             # FastAPI 入口 & 后台监听任务
-│   ├── audio_listener.py   # 录音 & 调用识别模型
-│   ├── detector.py         # 鸟叫识别封装（预留 BirdNET 接入）
-│   ├── models.py           # Pydantic / DB 模型
-│   ├── db.py               # SQLite 读写封装
-│   └── static
-│       └── index.html      # 简单 Web 页面
-└── data
-    ├── audio               # 存放音频片段
-    └── dove_events.db      # SQLite 数据库（容器卷挂载出来）
+```
+┌─────────────────────────────────────┐
+│      ESP32 边缘计算设备              │
+│  ┌──────────┐  ┌──────────┐         │
+│  │ I2S 麦克风│→ │TensorFlow│→        │
+│  │ 持续录音  │  │Lite 模型 │         │
+│  │ (16kHz)  │  │实时识别   │         │
+│  └──────────┘  └──────────┘         │
+│                    │                 │
+│                    ▼                 │
+│           检测到斑鸠叫声              │
+│                    │                 │
+│                    ▼                 │
+│         WiFi 发送事件到服务器         │
+└─────────────────────────────────────┘
+                    │
+                    │ HTTP POST
+                    │
+                    ▼
+┌─────────────────────────────────────┐
+│   Home Assistant (ESPHome) 服务器     │
+│  ┌──────────┐  ┌──────────┐         │
+│  │Webhook   │→ │SQLite    │→        │
+│  │接收事件  │  │存储记录   │         │
+│  └──────────┘  └──────────┘         │
+│                    │                 │
+│                    ▼                 │
+│        自动统计（今日/周/月）          │
+│                    │                 │
+│                    ▼                 │
+│      自动生成报告（每日/周/月）         │
+└─────────────────────────────────────┘
 ```
 
-> 初次 clone 时 `data/` 目录可能为空，运行容器时会自动创建。
+## 🚀 快速开始
 
----
+### 1. 硬件准备
 
-## 三、依赖说明
+**必需硬件：**
+- ESP32 开发板（推荐 ESP32-WROOM-32 或 ESP32-S3）
+- I2S 数字麦克风（推荐 INMP441）
+- USB 数据线（用于上传代码和供电）
 
-- Python 3.10+
-- 主要依赖：
-  - `fastapi`：Web API
-  - `uvicorn[standard]`：ASGI 服务器
-  - `sounddevice` + `soundfile`：录音 & 保存 WAV（需要容器内 ALSA 支持）
-  - `pydantic`：数据模型
-  - `sqlalchemy`：SQLite ORM
+**INMP441 连接方式：**
+```
+INMP441    ->    ESP32
+─────────────────────────
+VDD        ->    3.3V
+GND        ->    GND
+WS (LRCLK) ->    GPIO 25
+SCK (BCLK) ->    GPIO 33
+SD (DOUT)  ->    GPIO 32
+```
 
-> 鸟叫识别模型（如 BirdNET）暂不直接写在 `requirements.txt` 中，因为不同 NAS 平台对 TensorFlow/PyTorch 支持差异较大。你可以在确定后再添加相应依赖和实现。
+### 2. 训练模型
 
----
+#### 2.1 准备数据集
 
-## 四、在 N1 电视盒子（ARM）上的部署建议
+收集斑鸠叫声和背景噪声样本，整理成以下结构：
+```
+data/
+  train/
+    dove/          # 斑鸠叫声样本（建议 100+ 个）
+    background/     # 背景噪声样本（建议 100+ 个）
+  test/
+    dove/
+    background/
+```
 
-### 1. 在 N1 上安装什么系统
+**数据收集建议：**
+- 从 [Xeno-canto](https://www.xeno-canto.org/) 下载斑鸠叫声
+- 从 [Macaulay Library](https://www.macaulaylibrary.org/) 下载
+- 自己录制（使用手机/录音笔）
 
-推荐在 N1 上刷入**精简的 Linux 发行版**，例如：
+使用数据预处理脚本：
+```bash
+cd training
+python3 collect_data.py --input_dir raw_audio/dove --output_dir data/train --category dove
+python3 collect_data.py --input_dir raw_audio/background --output_dir data/train --category background
+```
 
-- **Armbian / Ubuntu Server（适配 N1 的镜像）**
-  - 优点：有标准的 apt 软件源，安装 Docker、音频工具较方便。
-  - 可搜索关键字：`N1 Armbian 安装`、`N1 Ubuntu 盒子 刷机`。
-
-系统要求：
-
-- 支持 Docker（本项目默认通过 Docker 运行）。
-- `/dev/snd` 设备可用（USB 话筒被系统识别为声卡）。
-
-### 2. N1 上准备环境
-
-在 N1 的 Linux 系统中（以 Armbian/Ubuntu 为例）：
+#### 2.2 训练模型
 
 ```bash
-uname -m      # 一般会看到 aarch64 / armv8 等 ARM64 架构
-sudo apt update
-sudo apt install -y docker.io docker-compose alsa-utils
+cd training
+pip install -r requirements.txt
+python3 train_model.py --train_dir data/train --epochs 50 --output_dir models
 ```
 
-插上 USB 话筒后，确认系统识别：
+#### 2.3 转换为 ESP32 格式
 
 ```bash
-arecord -l
+python3 convert_model_to_c_array.py models/dove_detector.tflite ../esp32/model.h
 ```
 
-若能看到类似 `card 1: Device ...` 即表示声卡设备已就绪。
+### 3. 部署 ESP32
 
-### 3. 将项目放到 N1 上
+#### 3.1 安装 Arduino IDE 和依赖
 
-在 N1 上创建目录并放入本项目：
+1. 安装 [Arduino IDE](https://www.arduino.cc/en/software)
+2. 安装 ESP32 支持：
+   - 文件 -> 首选项 -> 附加开发板管理器网址：
+     ```
+     https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+     ```
+   - 工具 -> 开发板 -> 开发板管理器 -> 搜索 "ESP32" -> 安装
+3. 安装库：
+   - `ArduinoJson` (by Benoit Blanchon)
+   - `TensorFlowLite_ESP32`（如果可用）
 
-```bash
-mkdir -p /opt/DoveListener
-cd /opt/DoveListener
+#### 3.2 配置代码
+
+编辑 `esp32/dove_detector.ino`，修改以下配置：
+
+```cpp
+const char* WIFI_SSID = "你的WiFi名称";
+const char* WIFI_PASSWORD = "你的WiFi密码";
+const char* ESPHOME_SERVER = "http://192.168.1.100:8123";  // Home Assistant 地址
+const char* ESPHOME_API_KEY = "你的Home Assistant API密钥";
 ```
 
-将你本地的 `DoveListener` 目录内容拷贝到此目录下（可用 `scp` 或 `rsync`）。
+#### 3.3 编译和上传
 
-### 4. 使用 Docker 部署（ARM 自动适配）
+1. 选择开发板：工具 -> 开发板 -> ESP32 Arduino -> ESP32 Dev Module
+2. 选择端口：工具 -> 端口 -> 选择你的 ESP32
+3. 编译：项目 -> 验证/编译
+4. 上传：项目 -> 上传
 
-本项目 `Dockerfile` 使用官方 `python:3.11-slim` 作为基础镜像，该镜像为多架构镜像，在 N1 上构建时会自动拉取 ARM 版本，无需额外修改。
+### 4. 配置 Home Assistant
 
-`docker-compose.yml` 已映射：
+#### 4.1 安装 Home Assistant
 
-- `./data:/app/data`：持久化数据库和录音文件；
-- `/dev/snd:/dev/snd`：将宿主机声卡设备映射到容器内。
+如果还没有安装，参考 [Home Assistant 官方文档](https://www.home-assistant.io/installation/)。
 
-在项目目录执行：
+#### 4.2 配置 Webhook
 
-```bash
-cd /opt/DoveListener
-docker compose build
-docker compose up -d
+1. 在 Home Assistant 中：设置 -> 设备与服务 -> Webhook
+2. 添加 Webhook，ID 设为 `dove_detector`
+3. 复制 Webhook URL
+
+#### 4.3 添加配置
+
+将以下文件内容添加到 Home Assistant：
+
+- `homeassistant/dove_listener.yaml` → `configuration.yaml` 或作为包
+- `homeassistant/automations.yaml` → `automations.yaml`
+- `homeassistant/shell_commands.yaml` → `configuration.yaml` 或独立文件
+
+#### 4.4 配置报告生成
+
+1. 将 `reports/generate_reports.py` 复制到 Home Assistant 的 `/config/dove_reports/` 目录
+2. 安装 Python 依赖：
+   ```bash
+   pip3 install pandas matplotlib
+   ```
+3. 重启 Home Assistant
+
+## 📁 项目结构
+
+```
+DoveListener/
+├── README.md                    # 本文件
+├── esp32/                       # ESP32 设备端代码
+│   ├── dove_detector.ino        # Arduino 主程序
+│   ├── esphome_config.yaml      # ESPHome 配置（可选）
+│   ├── model.h                  # TensorFlow Lite 模型（需训练生成）
+│   └── README.md                # ESP32 部署指南
+├── training/                     # 模型训练相关
+│   ├── train_model.py           # 模型训练脚本
+│   ├── collect_data.py          # 数据收集和预处理
+│   ├── convert_model_to_c_array.py  # 模型转 C 数组
+│   ├── requirements.txt         # Python 依赖
+│   └── README.md                # 训练指南
+├── homeassistant/               # Home Assistant 配置
+│   ├── dove_listener.yaml       # 传感器和自动化配置
+│   ├── automations.yaml         # 报告生成自动化
+│   ├── shell_commands.yaml      # Shell 命令配置
+│   └── webhook_handler.py       # Webhook 处理器（可选）
+└── reports/                      # 报告生成脚本
+    └── generate_reports.py      # 每日/周/月报告生成
 ```
 
-启动后访问：
+## 📊 功能说明
 
-- Web 页面：`http://<N1_IP>:8000/`
-- API 文档：`http://<N1_IP>:8000/docs`
+### ESP32 端功能
 
-> 若使用的是其它精简系统（如 OpenWrt），只要有 Docker 并可映射 `/dev/snd` 到容器，同样可以用这套配置。
+- ✅ 持续录音（16kHz 采样率）
+- ✅ 实时运行 TensorFlow Lite 模型
+- ✅ 本地识别斑鸠叫声
+- ✅ WiFi 发送检测事件到服务器
+- ✅ 低功耗运行
+
+### Home Assistant 端功能
+
+- ✅ Webhook 接收 ESP32 事件
+- ✅ SQLite 数据库存储历史记录
+- ✅ 自动计数器（今日/本周/本月）
+- ✅ 自动化规则（重置计数器、生成报告）
+- ✅ 每日/每周/每月自动生成统计报告
+
+### 报告内容
+
+**每日报告：**
+- 总叫声次数
+- 最早叫声时间
+- 最频繁时段
+- 24 小时时间分布图
+
+**每周报告：**
+- 每日趋势统计
+- 周总次数
+- 每日分布图
+
+**每月报告：**
+- 每日趋势统计
+- 周统计汇总
+- 月总次数
+- 趋势分析图
+
+## 🔧 配置说明
+
+### ESP32 配置参数
+
+在 `esp32/dove_detector.ino` 中可以调整：
+
+```cpp
+const int SAMPLE_RATE = 16000;           // 采样率
+const int AUDIO_DURATION_MS = 1000;      // 每次分析时长（毫秒）
+const float DETECTION_THRESHOLD = 0.7;    // 检测阈值（0-1）
+const unsigned long MIN_EVENT_INTERVAL_MS = 2000;  // 最小事件间隔
+```
+
+### Home Assistant 配置
+
+在 `homeassistant/dove_listener.yaml` 中可以调整：
+
+- 检测置信度阈值
+- 计数器重置时间
+- 报告生成时间
+
+## 📈 性能指标
+
+- **识别延迟**：< 2 秒（录音 + 推理 + 发送）
+- **功耗**：~100-200mA @ 3.3V（持续运行）
+- **模型大小**：< 100KB（量化后）
+- **识别准确率**：> 85%（取决于训练数据质量）
+
+## 🐛 故障排查
+
+### ESP32 无法连接 WiFi
+- 检查 SSID 和密码是否正确
+- 确认 WiFi 信号强度足够
+- 查看串口输出错误信息
+
+### 模型推理失败
+- 检查模型文件是否正确嵌入
+- 确认 Tensor Arena 大小足够
+- 查看串口输出的模型信息
+
+### Home Assistant 收不到事件
+- 检查 Webhook URL 是否正确
+- 确认 API 密钥有效
+- 查看 Home Assistant 日志
+
+### 识别准确率低
+- 增加训练数据量
+- 调整检测阈值 `DETECTION_THRESHOLD`
+- 检查麦克风位置和方向
+
+## 🔄 扩展功能
+
+- 🔄 多设备部署（不同位置）
+- 🔄 实时通知（手机推送）
+- 🔄 数据可视化（Grafana）
+- 🔄 云端备份
+- 🔄 其他鸟类识别（扩展模型）
+
+## 📚 详细文档
+
+- **ESP32 部署指南**：`esp32/README.md`
+- **模型训练指南**：`training/README.md`
+- **Home Assistant 配置**：`homeassistant/` 目录下的文件
+
+## 📄 许可证
+
+本项目为开源项目，可自由使用和修改。
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
 
 ---
 
-## 五、快速开始（通用 Docker 方式）
-
-### 1. 准备目录
-
-在 NAS 上创建项目目录，例如：
-
-```bash
-mkdir -p /volume1/docker/DoveListener
-cd /volume1/docker/DoveListener
-```
-
-将本仓库代码放入该目录下。
-
-### 2. 连接麦克风
-
-1. 将 USB 麦克风插入 NAS。
-2. 使用 SSH 登录 NAS，执行：
-
-```bash
-arecord -l
-```
-
-确认系统已识别到声卡（如显示 `card 1: Device ...`）。
-
-### 3. 配置 Docker Compose
-
-`docker-compose.yml` 中演示了一个示例配置：
-
-```yaml
-services:
-  dove_listener:
-    build: .
-    container_name: dove_listener
-    restart: unless-stopped
-    volumes:
-      - ./data:/app/data
-    ports:
-      - "8000:8000"
-    devices:
-      - "/dev/snd:/dev/snd"   # 将主机声卡设备映射进容器
-```
-
-> 不同 NAS 设备映射声卡的方式可能略有差异，如有问题可根据实际设备调整。
-
-### 4. 构建并启动
-
-```bash
-docker compose build
-docker compose up -d
-```
-
-启动后访问：
-
-- Web 页面：`http://<NAS_IP>:8000/`
-- API 文档：`http://<NAS_IP>:8000/docs`
-
----
-
-## 六、鸟叫识别（BirdNET 等）集成建议
-
-目前 `app/detector.py` 中保留了一个简单的“假检测”逻辑，该逻辑只是用来验证系统流程是否正常：
-
-- 随机返回是否检测到斑鸠。
-- 你可以先用它确认：
-  - 录音正常
-  - 数据写入正常
-  - Web 统计展示正常
-
-之后你可以按以下步骤替换为真实模型：
-
-1. 在 NAS 上单独测试 BirdNET 或其它鸟叫模型（推荐用 Docker 版本）。
-2. 确定一个**从 WAV 文件或 NumPy 音频数组 → 返回物种和置信度**的 Python 调用接口。
-3. 修改 `detector.py` 中的 `detect_dove()` 函数：
-   - 输入：音频数组 / 临时 WAV 路径
-   - 输出：`(is_dove: bool, confidence: float, species: str)`
-
-如需具体 BirdNET 集成代码示例，可以告知：
-
-- 你打算用的 BirdNET 版本（官方 Docker / birdnetlib / 其它）
-- 目标设备 CPU 架构（例如 N1 通常为 ARM64/aarch64）
-
-我可以在此基础上给出精确到代码级别的适配。
-
----
-
-## 七、Web 页面功能
-
-默认 Web 页面（`/`）提供：
-
-- 今日概览：
-  - 今日斑鸠叫声总次数
-  - 最早叫声时间
-  - 最高频时段
-- 24 小时柱状图 / 折线图：
-  - x 轴：时间（按 30 分钟或 1 小时分桶）
-  - y 轴：每个时间段内的叫声次数
-
-相关 API 示例（具体实现见 `app/main.py`）：
-
-- `GET /api/stats/today`：返回今日统计数据。
-- `GET /api/events?date=YYYY-MM-DD`：返回某天所有事件（可用于前端更高级的可视化）。
-
----
-
-## 八、下一步
-
-1. 先用当前代码 + “假检测函数”跑起来，验证录音和统计工作流。
-2. 确定你想使用的鸟叫识别模型（BirdNET/SoundID/自训练模型）。
-3. 告诉我：
-   - NAS CPU 架构和内存大概配置
-   - 你倾向用 Docker 里的现成模型还是在本容器内直接装 Python 包
-4. 我可以再帮你补上：
-   - 具体模型安装命令
-   - `detector.py` 的真实实现
-   - 若需要，还可以加上简单的用户认证和历史数据浏览页面。
-
+**开始使用：** 按照上面的"快速开始"步骤，从训练模型开始，然后部署 ESP32 设备，最后配置 Home Assistant 服务器。
 

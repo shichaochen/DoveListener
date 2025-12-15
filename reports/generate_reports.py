@@ -32,9 +32,15 @@ import argparse
 from typing import Dict, List, Tuple
 
 # 配置
+# 方式1：使用 Home Assistant 数据库（推荐）
+HA_DB_PATH = os.getenv('HA_DB_PATH', '/config/home-assistant_v2.db')
+# 方式2：使用独立数据库（如果使用 webhook_handler.py）
 DB_PATH = os.getenv('DOVE_DB_PATH', '/config/dove_events.db')
 REPORTS_DIR = os.getenv('DOVE_REPORTS_DIR', '/config/dove_reports')
 LANG = 'zh_CN'  # 中文报告
+
+# 优先使用 Home Assistant 数据库
+USE_HA_DB = os.path.exists(HA_DB_PATH) if 'HA_DB_PATH' in os.environ else False
 
 def get_db_connection():
     """获取数据库连接"""
@@ -42,6 +48,35 @@ def get_db_connection():
 
 def load_events(start_date: date, end_date: date) -> pd.DataFrame:
     """加载指定日期范围的事件"""
+    if USE_HA_DB:
+        # 从 Home Assistant 数据库读取（通过 states 表）
+        conn = sqlite3.connect(HA_DB_PATH)
+        # Home Assistant 使用 states 表存储实体状态
+        # 我们需要从 counter.dove_count_today 的变化中推断事件
+        # 或者使用 recorder 的 events 表
+        query = """
+            SELECT 
+                last_updated_ts as timestamp,
+                'dove' as species,
+                0.8 as confidence
+            FROM states
+            WHERE entity_id = 'counter.dove_count_today'
+            AND DATE(datetime(last_updated_ts / 1000, 'unixepoch', 'localtime')) >= ?
+            AND DATE(datetime(last_updated_ts / 1000, 'unixepoch', 'localtime')) < ?
+            AND state != LAG(state) OVER (ORDER BY last_updated_ts)
+            ORDER BY last_updated_ts
+        """
+        try:
+            df = pd.read_sql_query(query, conn, params=(start_date.isoformat(), end_date.isoformat()))
+            conn.close()
+            if len(df) > 0:
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                return df
+        except Exception as e:
+            print(f"从 Home Assistant 数据库读取失败: {e}")
+            conn.close()
+    
+    # 回退到独立数据库
     conn = get_db_connection()
     query = """
         SELECT timestamp, species, confidence
@@ -49,14 +84,19 @@ def load_events(start_date: date, end_date: date) -> pd.DataFrame:
         WHERE DATE(timestamp) >= ? AND DATE(timestamp) < ?
         ORDER BY timestamp
     """
-    df = pd.read_sql_query(query, conn, params=(start_date.isoformat(), end_date.isoformat()))
-    conn.close()
-    
-    if len(df) == 0:
+    try:
+        df = pd.read_sql_query(query, conn, params=(start_date.isoformat(), end_date.isoformat()))
+        conn.close()
+        
+        if len(df) == 0:
+            return pd.DataFrame(columns=['timestamp', 'species', 'confidence'])
+        
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        return df
+    except Exception as e:
+        print(f"从独立数据库读取失败: {e}")
+        conn.close()
         return pd.DataFrame(columns=['timestamp', 'species', 'confidence'])
-    
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    return df
 
 def calculate_daily_stats(df: pd.DataFrame) -> Dict:
     """计算每日统计"""

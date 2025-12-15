@@ -30,8 +30,10 @@
 // ========== 配置参数 ==========
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* ESPHOME_SERVER = "http://192.168.1.100:8123";  // Home Assistant 地址
-const char* ESPHOME_API_KEY = "YOUR_ESPHOME_API_KEY";
+// Home Assistant Webhook 配置
+// 在 Home Assistant 中创建 Webhook，ID 设为 "dove_detector"
+// 然后使用 Webhook URL，格式：http://你的HA地址:8123/api/webhook/dove_detector
+const char* WEBHOOK_URL = "http://192.168.1.100:8123/api/webhook/dove_detector";
 
 // 音频参数
 const int SAMPLE_RATE = 16000;  // 16kHz 采样率，适合 ESP32
@@ -91,10 +93,17 @@ void loop() {
   if (detectDove(audio_buffer)) {
     unsigned long now = millis();
     if (now - last_event_time >= MIN_EVENT_INTERVAL_MS) {
-      float confidence = output->data.f[0];  // 假设模型输出是 [非斑鸠概率, 斑鸠概率]
+      // 获取置信度（根据模型输出格式调整）
+      float confidence;
+      if (output->dims->data[0] == 2) {
+        confidence = output->data.f[1];  // 二分类：[背景, 斑鸠]
+      } else {
+        confidence = output->data.f[0];  // 单输出
+      }
+      
       sendEventToServer(confidence, now);
       last_event_time = now;
-      Serial.printf("[检测到斑鸠] 置信度: %.2f, 时间: %lu\n", confidence, now);
+      Serial.printf("🐦 [检测到斑鸠] 置信度: %.2f, 时间: %lu ms\n", confidence, now);
     }
   }
 
@@ -256,11 +265,10 @@ void sendEventToServer(float confidence, unsigned long timestamp) {
   }
 
   HTTPClient http;
-  String url = String(ESPHOME_SERVER) + "/api/esphome/dove_detector";
   
-  http.begin(url);
+  // 使用 Home Assistant Webhook（无需 API 密钥）
+  http.begin(WEBHOOK_URL);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", "Bearer " + String(ESPHOME_API_KEY));
 
   // 构建 JSON 数据
   StaticJsonDocument<200> doc;
@@ -275,10 +283,11 @@ void sendEventToServer(float confidence, unsigned long timestamp) {
 
   int httpResponseCode = http.POST(jsonPayload);
   
-  if (httpResponseCode > 0) {
-    Serial.printf("事件发送成功，HTTP 代码: %d\n", httpResponseCode);
+  if (httpResponseCode == 200) {
+    Serial.printf("✓ 事件发送成功，HTTP 代码: %d\n", httpResponseCode);
   } else {
-    Serial.printf("事件发送失败，错误: %s\n", http.errorToString(httpResponseCode).c_str());
+    Serial.printf("✗ 事件发送失败，HTTP 代码: %d, 错误: %s\n", 
+                   httpResponseCode, http.errorToString(httpResponseCode).c_str());
   }
 
   http.end();

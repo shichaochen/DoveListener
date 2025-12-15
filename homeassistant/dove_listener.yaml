@@ -2,20 +2,8 @@
 # 将此配置添加到你的 configuration.yaml 或作为独立包
 
 # ========== 传感器定义 ==========
-sensor:
-  # 接收 ESP32 发送的斑鸠检测事件（通过 REST API）
-  - platform: rest
-    name: "Dove Detection Events"
-    resource: http://localhost:8123/api/webhook/dove_detector
-    method: POST
-    value_template: "{{ value_json.confidence }}"
-    json_attributes:
-      - device_id
-      - event_type
-      - confidence
-      - timestamp
-      - local_time
-    scan_interval: 60
+# 注意：Webhook 数据通过自动化处理，不需要单独的传感器
+# 如果需要查看最后检测的置信度，可以使用 input_number
 
 # ========== 输入辅助 ==========
 input_number:
@@ -26,12 +14,23 @@ input_number:
     step: 0.01
     initial: 0.7
     unit_of_measurement: "概率"
+    icon: mdi:chart-line
+
+  last_dove_confidence:
+    name: "最后检测置信度"
+    min: 0
+    max: 1
+    step: 0.01
+    initial: 0
+    unit_of_measurement: "概率"
+    icon: mdi:percent
 
 input_datetime:
   last_dove_detection:
     name: "最后检测时间"
     has_date: true
     has_time: true
+    icon: mdi:clock-time-four
 
 # ========== 计数器 ==========
 counter:
@@ -52,13 +51,15 @@ counter:
     step: 1
 
 # ========== 历史记录 ==========
+# 确保计数器和历史数据被记录
 recorder:
   include:
     entities:
       - counter.dove_count_today
       - counter.dove_count_week
       - counter.dove_count_month
-      - sensor.dove_detection_events
+      - input_number.last_dove_confidence
+      - input_datetime.last_dove_detection
 
 # ========== 自动化：接收 ESP32 事件 ==========
 automation:
@@ -81,6 +82,13 @@ automation:
         data:
           datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
       
+      # 更新最后检测置信度
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.last_dove_confidence
+        data:
+          value: "{{ trigger.json.confidence | float }}"
+      
       # 增加计数器
       - service: counter.increment
         target:
@@ -89,14 +97,18 @@ automation:
       # 记录到日志
       - service: system_log.write
         data:
-          message: "检测到斑鸠叫声 - 置信度: {{ trigger.json.confidence | float * 100 | round(1) }}%"
+          message: "🐦 检测到斑鸠叫声 - 置信度: {{ trigger.json.confidence | float * 100 | round(1) }}%, 设备: {{ trigger.json.device_id }}"
           level: info
       
-      # 可选：发送通知
+      # 可选：发送通知（取消注释并配置你的通知服务）
       # - service: notify.mobile_app_your_phone
       #   data:
       #     title: "🐦 检测到斑鸠叫声"
       #     message: "置信度: {{ trigger.json.confidence | float * 100 | round(1) }}%"
+      #     data:
+      #       actions:
+      #         - action: "VIEW_REPORT"
+      #           title: "查看统计"
 
   # 每日凌晨重置计数器
   - alias: "每日重置计数器"
