@@ -129,9 +129,18 @@ python3 convert_model_to_c_array.py models/dove_detector.tflite ../esp32/model.h
 ```cpp
 const char* WIFI_SSID = "你的WiFi名称";
 const char* WIFI_PASSWORD = "你的WiFi密码";
-const char* ESPHOME_SERVER = "http://192.168.1.100:8123";  // Home Assistant 地址
-const char* ESPHOME_API_KEY = "你的Home Assistant API密钥";
+
+// MQTT 配置
+const char* MQTT_BROKER = "192.168.1.100";  // MQTT Broker 地址（通常是 Home Assistant 地址）
+const int MQTT_PORT = 1883;                 // MQTT 端口（默认 1883，TLS 使用 8883）
+const char* MQTT_USERNAME = "";            // MQTT 用户名（如果不需要认证，留空）
+const char* MQTT_PASSWORD = "";            // MQTT 密码（如果不需要认证，留空）
+const char* MQTT_CLIENT_ID = "esp32_dove_detector_01";  // 客户端 ID（每个设备唯一）
+const char* MQTT_TOPIC = "dove/detector/event";  // MQTT 主题
 ```
+
+**注意：** 需要安装 `PubSubClient` 库：
+- 工具 -> 管理库 -> 搜索 "PubSubClient" -> 安装
 
 #### 3.3 编译和上传
 
@@ -146,11 +155,23 @@ const char* ESPHOME_API_KEY = "你的Home Assistant API密钥";
 
 如果还没有安装，参考 [Home Assistant 官方文档](https://www.home-assistant.io/installation/)。
 
-#### 4.2 配置 Webhook
+#### 4.2 配置 MQTT Broker
 
-1. 在 Home Assistant 中：设置 -> 设备与服务 -> Webhook
-2. 添加 Webhook，ID 设为 `dove_detector`
-3. 复制 Webhook URL
+Home Assistant 通常自带 Mosquitto MQTT Broker。如果没有：
+
+1. 在 Home Assistant 中：设置 -> 加载项 -> 加载项商店
+2. 搜索 "Mosquitto broker" 并安装
+3. 启动并配置（如果需要用户名密码）
+
+如果使用外部 MQTT Broker，在 `configuration.yaml` 中添加：
+
+```yaml
+mqtt:
+  broker: 192.168.1.100
+  port: 1883
+  username: your_username  # 可选
+  password: your_password   # 可选
+```
 
 #### 4.3 添加配置
 
@@ -242,6 +263,11 @@ const int SAMPLE_RATE = 16000;           // 采样率
 const int AUDIO_DURATION_MS = 1000;      // 每次分析时长（毫秒）
 const float DETECTION_THRESHOLD = 0.7;    // 检测阈值（0-1）
 const unsigned long MIN_EVENT_INTERVAL_MS = 2000;  // 最小事件间隔
+
+// MQTT 配置
+const char* MQTT_BROKER = "192.168.1.100";  // MQTT Broker 地址
+const int MQTT_PORT = 1883;                 // MQTT 端口
+const char* MQTT_TOPIC = "dove/detector/event";  // MQTT 主题
 ```
 
 ### Home Assistant 配置
@@ -272,8 +298,10 @@ const unsigned long MIN_EVENT_INTERVAL_MS = 2000;  // 最小事件间隔
 - 查看串口输出的模型信息
 
 ### Home Assistant 收不到事件
-- 检查 Webhook URL 是否正确
-- 确认 API 密钥有效
+- 检查 MQTT Broker 是否运行
+- 确认 MQTT 连接配置正确（地址、端口、用户名密码）
+- 检查 MQTT 主题是否正确：`dove/detector/event`
+- 在 Home Assistant 中：开发者工具 -> MQTT -> 监听主题 `dove/detector/event` 测试
 - 查看 Home Assistant 日志
 
 ### 识别准确率低

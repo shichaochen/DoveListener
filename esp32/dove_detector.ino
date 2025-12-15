@@ -14,12 +14,12 @@
  * 依赖库：
  * - Arduino TensorFlow Lite for Microcontrollers
  * - WiFi
- * - HTTPClient
+ * - PubSubClient (MQTT)
  * - ArduinoJson
  */
 
 #include <WiFi.h>
-#include <HTTPClient.h>
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
@@ -30,10 +30,14 @@
 // ========== 配置参数 ==========
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-// Home Assistant Webhook 配置
-// 在 Home Assistant 中创建 Webhook，ID 设为 "dove_detector"
-// 然后使用 Webhook URL，格式：http://你的HA地址:8123/api/webhook/dove_detector
-const char* WEBHOOK_URL = "http://192.168.1.100:8123/api/webhook/dove_detector";
+
+// MQTT 配置
+const char* MQTT_BROKER = "192.168.1.100";  // MQTT Broker 地址（通常是 Home Assistant 地址）
+const int MQTT_PORT = 1883;                 // MQTT 端口（默认 1883，TLS 使用 8883）
+const char* MQTT_USERNAME = "";              // MQTT 用户名（如果不需要认证，留空）
+const char* MQTT_PASSWORD = "";              // MQTT 密码（如果不需要认证，留空）
+const char* MQTT_CLIENT_ID = "esp32_dove_detector_01";  // 客户端 ID（每个设备唯一）
+const char* MQTT_TOPIC = "dove/detector/event";  // MQTT 主题
 
 // 音频参数
 const int SAMPLE_RATE = 16000;  // 16kHz 采样率，适合 ESP32
@@ -63,10 +67,16 @@ const int kTensorArenaSize = 100 * 1024;  // 100KB，根据实际模型调整
 int16_t audio_buffer[SAMPLES_PER_WINDOW];
 unsigned long last_event_time = 0;
 
+// MQTT 客户端
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
+
 // ========== 函数声明 ==========
 void setupWiFi();
 void setupI2S();
 void setupModel();
+void setupMQTT();
+void reconnectMQTT();
 void recordAudio(int16_t* buffer, int samples);
 bool detectDove(int16_t* audio_samples);
 void sendEventToServer(float confidence, unsigned long timestamp);
@@ -81,11 +91,18 @@ void setup() {
   setupWiFi();
   setupI2S();
   setupModel();
+  setupMQTT();
 
   Serial.println("系统就绪，开始监听...");
 }
 
 void loop() {
+  // 保持 MQTT 连接
+  if (!mqttClient.connected()) {
+    reconnectMQTT();
+  }
+  mqttClient.loop();  // 处理 MQTT 消息
+
   // 录音
   recordAudio(audio_buffer, SAMPLES_PER_WINDOW);
 
@@ -202,6 +219,45 @@ void setupModel() {
   Serial.printf("输出形状: [%d]\n", output->dims->data[0]);
 }
 
+// ========== MQTT 初始化 ==========
+void setupMQTT() {
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setKeepAlive(60);  // 保持连接 60 秒
+  reconnectMQTT();
+}
+
+// ========== MQTT 重连 ==========
+void reconnectMQTT() {
+  int attempts = 0;
+  while (!mqttClient.connected() && attempts < 10) {
+    Serial.print("连接 MQTT Broker...");
+    
+    // 尝试连接
+    bool connected = false;
+    if (strlen(MQTT_USERNAME) > 0) {
+      connected = mqttClient.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD);
+    } else {
+      connected = mqttClient.connect(MQTT_CLIENT_ID);
+    }
+    
+    if (connected) {
+      Serial.println(" 成功!");
+      Serial.printf("MQTT 主题: %s\n", MQTT_TOPIC);
+      
+      // 可选：发布在线状态
+      mqttClient.publish("dove/detector/status", "online", true);
+    } else {
+      Serial.printf(" 失败，错误代码: %d\n", mqttClient.state());
+      delay(2000);
+      attempts++;
+    }
+  }
+  
+  if (!mqttClient.connected()) {
+    Serial.println("MQTT 连接失败，将在 loop() 中重试");
+  }
+}
+
 // ========== 录音 ==========
 void recordAudio(int16_t* buffer, int samples) {
   size_t bytes_read;
@@ -257,39 +313,40 @@ bool detectDove(int16_t* audio_samples) {
   return dove_probability >= DETECTION_THRESHOLD;
 }
 
-// ========== 发送事件到服务器 ==========
+// ========== 发送事件到服务器（MQTT） ==========
 void sendEventToServer(float confidence, unsigned long timestamp) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi 未连接，无法发送事件");
     return;
   }
 
-  HTTPClient http;
-  
-  // 使用 Home Assistant Webhook（无需 API 密钥）
-  http.begin(WEBHOOK_URL);
-  http.addHeader("Content-Type", "application/json");
+  // 确保 MQTT 连接
+  if (!mqttClient.connected()) {
+    reconnectMQTT();
+    if (!mqttClient.connected()) {
+      Serial.println("MQTT 未连接，无法发送事件");
+      return;
+    }
+  }
 
   // 构建 JSON 数据
   StaticJsonDocument<200> doc;
-  doc["device_id"] = "esp32_dove_detector_01";
+  doc["device_id"] = MQTT_CLIENT_ID;
   doc["event_type"] = "dove_detected";
   doc["confidence"] = confidence;
   doc["timestamp"] = timestamp;
-  doc["local_time"] = String(millis() / 1000);  // 秒级时间戳
+  doc["local_time"] = millis() / 1000;  // 秒级时间戳
 
   String jsonPayload;
   serializeJson(doc, jsonPayload);
 
-  int httpResponseCode = http.POST(jsonPayload);
+  // 发布到 MQTT 主题
+  bool published = mqttClient.publish(MQTT_TOPIC, jsonPayload.c_str(), false);
   
-  if (httpResponseCode == 200) {
-    Serial.printf("✓ 事件发送成功，HTTP 代码: %d\n", httpResponseCode);
+  if (published) {
+    Serial.printf("✓ MQTT 事件发送成功 - 主题: %s, 置信度: %.2f\n", MQTT_TOPIC, confidence);
   } else {
-    Serial.printf("✗ 事件发送失败，HTTP 代码: %d, 错误: %s\n", 
-                   httpResponseCode, http.errorToString(httpResponseCode).c_str());
+    Serial.printf("✗ MQTT 事件发送失败 - 主题: %s\n", MQTT_TOPIC);
   }
-
-  http.end();
 }
 

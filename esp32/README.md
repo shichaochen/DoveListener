@@ -27,21 +27,28 @@ SD (DOUT)  ->    GPIO 32
 2. **安装库**：
    - 工具 -> 管理库 -> 搜索并安装：
      - `ArduinoJson` (by Benoit Blanchon)
+     - `PubSubClient` (by Nick O'Leary) - **MQTT 客户端库**
      - `TensorFlowLite_ESP32` (如果可用)
 
 3. **配置代码**：
    - 打开 `dove_detector.ino`
-   - 修改 WiFi 和服务器配置：
+   - 修改 WiFi 和 MQTT 配置：
      ```cpp
      const char* WIFI_SSID = "你的WiFi名称";
      const char* WIFI_PASSWORD = "你的WiFi密码";
-     const char* ESPHOME_SERVER = "http://192.168.1.100:8123";
-     const char* ESPHOME_API_KEY = "你的API密钥";
+     
+     // MQTT 配置
+     const char* MQTT_BROKER = "192.168.1.100";  // Home Assistant 地址
+     const int MQTT_PORT = 1883;                 // MQTT 端口
+     const char* MQTT_USERNAME = "";             // 如果不需要认证，留空
+     const char* MQTT_PASSWORD = "";             // 如果不需要认证，留空
+     const char* MQTT_CLIENT_ID = "esp32_dove_detector_01";
+     const char* MQTT_TOPIC = "dove/detector/event";
      ```
 
 4. **添加模型文件**：
    - 将训练生成的 `model.h` 文件放在与 `dove_detector.ino` 相同的目录
-   - 如果还没有模型，可以先注释掉模型相关代码，测试录音和网络功能
+   - 如果还没有模型，可以先注释掉模型相关代码，测试录音和 MQTT 功能
 
 ### 3. 编译和上传
 
@@ -54,10 +61,54 @@ SD (DOUT)  ->    GPIO 32
 
 打开串口监视器（115200 波特率），查看设备状态：
 - WiFi 连接状态
+- MQTT 连接状态
 - 模型加载状态
 - 检测事件
 
+## MQTT 配置说明
+
+### MQTT Broker
+
+Home Assistant 通常自带 Mosquitto MQTT Broker。如果没有：
+
+1. 在 Home Assistant 中：设置 -> 加载项 -> 加载项商店
+2. 搜索 "Mosquitto broker" 并安装
+3. 启动并配置
+
+### MQTT 主题
+
+- **事件主题**：`dove/detector/event` - ESP32 发布检测事件到此主题
+- **状态主题**：`dove/detector/status` - ESP32 发布在线状态（online/offline）
+
+### MQTT 消息格式
+
+ESP32 发布到 `dove/detector/event` 的 JSON 格式：
+
+```json
+{
+  "device_id": "esp32_dove_detector_01",
+  "event_type": "dove_detected",
+  "confidence": 0.85,
+  "timestamp": 1234567890,
+  "local_time": 12345
+}
+```
+
+### 测试 MQTT 连接
+
+在 Home Assistant 中：
+1. 开发者工具 -> MQTT
+2. 监听主题：`dove/detector/event`
+3. 如果 ESP32 发送事件，应该能看到消息
+
 ## 常见问题
+
+### MQTT 连接失败
+
+- 检查 MQTT Broker 是否运行
+- 确认 MQTT Broker 地址和端口正确
+- 如果使用认证，检查用户名密码
+- 查看串口输出错误信息
 
 ### 模型太大，无法编译
 
@@ -75,13 +126,6 @@ SD (DOUT)  ->    GPIO 32
 - 调整麦克风增益（如果支持）
 - 检查采样率设置
 
-### 无法连接到 Home Assistant
-
-- 检查 WiFi 连接
-- 确认 Home Assistant 地址和端口
-- 检查 API 密钥是否正确
-- 查看 Home Assistant 日志
-
 ## 性能优化
 
 ### 降低 CPU 占用
@@ -98,7 +142,6 @@ SD (DOUT)  ->    GPIO 32
 
 ## 下一步
 
-- 查看主 README (`../README_ESP32.md`) 了解完整系统配置
+- 查看主 README (`../README.md`) 了解完整系统配置
 - 训练自己的模型（见 `../training/` 目录）
 - 配置 Home Assistant（见 `../homeassistant/` 目录）
-

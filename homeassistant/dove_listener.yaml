@@ -61,19 +61,33 @@ recorder:
       - input_number.last_dove_confidence
       - input_datetime.last_dove_detection
 
+# ========== MQTT 传感器 ==========
+# 接收 ESP32 通过 MQTT 发送的检测事件
+mqtt:
+  sensor:
+    - name: "Dove Detection Event"
+      state_topic: "dove/detector/event"
+      value_template: "{{ value_json.confidence }}"
+      unit_of_measurement: "概率"
+      json_attributes_topic: "dove/detector/event"
+      json_attributes_template: "{{ value_json | tojson }}"
+      availability_topic: "dove/detector/status"
+      payload_available: "online"
+      payload_not_available: "offline"
+
 # ========== 自动化：接收 ESP32 事件 ==========
 automation:
-  # 接收 ESP32 发送的检测事件
+  # 接收 ESP32 通过 MQTT 发送的检测事件
   - alias: "接收斑鸠检测事件"
     id: receive_dove_detection
     trigger:
-      - platform: webhook
-        webhook_id: dove_detector
+      - platform: mqtt
+        topic: "dove/detector/event"
     condition:
       - condition: template
-        value_template: "{{ trigger.json.event_type == 'dove_detected' }}"
+        value_template: "{{ trigger.payload_json.event_type == 'dove_detected' }}"
       - condition: template
-        value_template: "{{ trigger.json.confidence | float >= states('input_number.dove_detection_threshold') | float }}"
+        value_template: "{{ trigger.payload_json.confidence | float >= states('input_number.dove_detection_threshold') | float }}"
     action:
       # 更新最后检测时间
       - service: input_datetime.set_datetime
@@ -87,7 +101,7 @@ automation:
         target:
           entity_id: input_number.last_dove_confidence
         data:
-          value: "{{ trigger.json.confidence | float }}"
+          value: "{{ trigger.payload_json.confidence | float }}"
       
       # 增加计数器
       - service: counter.increment
@@ -97,14 +111,14 @@ automation:
       # 记录到日志
       - service: system_log.write
         data:
-          message: "🐦 检测到斑鸠叫声 - 置信度: {{ trigger.json.confidence | float * 100 | round(1) }}%, 设备: {{ trigger.json.device_id }}"
+          message: "🐦 检测到斑鸠叫声 - 置信度: {{ trigger.payload_json.confidence | float * 100 | round(1) }}%, 设备: {{ trigger.payload_json.device_id }}"
           level: info
       
       # 可选：发送通知（取消注释并配置你的通知服务）
       # - service: notify.mobile_app_your_phone
       #   data:
       #     title: "🐦 检测到斑鸠叫声"
-      #     message: "置信度: {{ trigger.json.confidence | float * 100 | round(1) }}%"
+      #     message: "置信度: {{ trigger.payload_json.confidence | float * 100 | round(1) }}%"
       #     data:
       #       actions:
       #         - action: "VIEW_REPORT"
@@ -160,8 +174,15 @@ automation:
         target:
           entity_id: counter.dove_count_month
 
-# ========== Webhook 配置 ==========
-# 在 Home Assistant 中，webhook 需要在 configuration.yaml 中配置
-# 或者通过 UI: 设置 -> 设备与服务 -> Webhook -> 添加 Webhook
-# Webhook ID: dove_detector
+# ========== MQTT 配置说明 ==========
+# 1. 确保 Home Assistant 已安装并配置 MQTT Broker（Mosquitto）
+# 2. 在 Home Assistant 中：设置 -> 设备与服务 -> MQTT
+# 3. 如果使用外部 MQTT Broker，在 configuration.yaml 中添加：
+#    mqtt:
+#      broker: 192.168.1.100
+#      port: 1883
+#      username: your_username  # 可选
+#      password: your_password   # 可选
+# 4. ESP32 设备将发布到主题: dove/detector/event
+# 5. 设备状态主题: dove/detector/status
 
